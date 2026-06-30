@@ -62,7 +62,7 @@ var editId={athlete:null,routine:null};
 var calDate=new Date();
 var _exercises=[];
 var _statusFilter='Todos';
-var liveSession=null; // { atletaId, rutinaId, startedAt, muscles:{...}, timerId }
+var liveSession=null; // { atletaId, rutinaId, dia, startedAt, muscles:{...}, timerId }
 
 /* ── Persistencia (localStorage) ── */
 var STORAGE_KEY='fasciaState_v1';
@@ -106,7 +106,7 @@ function avatarHtml(name,size){
   var parts=name.trim().split(' ');
   var init=(parts[0]?parts[0][0]:'')+(parts[1]?parts[1][0]:'');
   init=init.toUpperCase().slice(0,2);
-  var colors=['#FF2D55','#FF375F','#CC1F3F','var(--coral2)','#991130'];
+  var colors=['#F1FF0A','#F5FF4D','#C2CC08','var(--coral2)','#9CA306'];
   var color=colors[name.charCodeAt(0)%colors.length];
   return '<div class="avatar" style="width:'+size+'px;height:'+size+'px;font-size:'+(size*0.35).toFixed(0)+'px;background:'+color+'">'+esc(init)+'</div>';
 }
@@ -137,8 +137,9 @@ function navigate(id){
   if(v){v.classList.add('active')}
   document.querySelectorAll('.nav-item,.mobile-nav-item').forEach(function(n){n.classList.remove('active')});
   document.querySelectorAll('[data-view="'+id+'"]').forEach(function(n){n.classList.add('active')});
+  moveSidebarBlob(false);
   renderView(id);
-  buildMobileNav();
+  moveMobileNavBlob(false);
   // Scroll to top
   var main=document.getElementById('mainContent');
   if(main) main.scrollTop=0;
@@ -159,6 +160,8 @@ function renderRutinaView(){
   var btnV = document.getElementById('tabVer');
   if(btnC){ btnC.classList.add('rtab-active'); }
   if(btnV){ btnV.classList.remove('rtab-active'); }
+  updateDaysPickerBtn();
+  renderDaysTabs();
   // Init body-muscles after DOM is painted
   setTimeout(function(){
     initBodyMuscles();
@@ -166,11 +169,14 @@ function renderRutinaView(){
 }
 
 /* ── Sidebar ── */
+var _sidebarBlobLastTop = null;
+
 function buildSidebar(){
   var el=document.getElementById('suName'); if(el) el.textContent=state.entrenador.nombre;
   var es2=document.getElementById('suSport'); if(es2) es2.textContent=state.entrenador.deporte;
   var nav=document.getElementById('sidebarNav');
-  nav.innerHTML=NAV_ITEMS.map(function(item){
+  nav.innerHTML='<div class="sidebar-blob" id="sidebarBlob"></div>'
+    + NAV_ITEMS.map(function(item){
     var badge=item.id==='atletas'?state.atletas.filter(function(a){return a.estado==='Activo'}).length
              :item.id==='pagos'?state.pagos.filter(function(p){return p.estado==='Pendiente'||p.estado==='Vencido'}).length:0;
     return '<button class="nav-item'+(currentView===item.id?' active':'')+'" data-view="'+item.id+'" onclick="navigate(\''+item.id+'\')">'
@@ -179,23 +185,143 @@ function buildSidebar(){
       +(badge>0?'<span class="nav-badge">'+badge+'</span>':'')
       +'</button>';
   }).join('');
+  _sidebarBlobLastTop = null;
+  requestAnimationFrame(function(){ moveSidebarBlob(true); });
+}
+
+/* Slide + vertical-jelly-stretch the active blob to the current nav item.
+   Mirrors the horizontal liquid effect from the reference nav, adapted to a
+   vertical list: scaleY instead of scaleX, transform-origin flips top/bottom
+   based on travel direction. */
+function moveSidebarBlob(instant){
+  var blob = document.getElementById('sidebarBlob');
+  var navEl = document.getElementById('sidebarNav');
+  var activeBtn = navEl ? navEl.querySelector('.nav-item.active') : null;
+  if(!blob || !navEl || !activeBtn) { if(blob) blob.classList.remove('show'); return; }
+
+  var btnRect = activeBtn.getBoundingClientRect();
+  var navRect = navEl.getBoundingClientRect();
+  var targetTop = btnRect.top - navRect.top + navEl.scrollTop;
+
+  blob.classList.add('show');
+
+  if(instant || _sidebarBlobLastTop === null){
+    blob.style.transition = 'none';
+    blob.style.top = targetTop + 'px';
+    blob.style.transform = 'scaleY(1)';
+    // Force reflow so the next transition isn't merged with this instant set
+    void blob.offsetHeight;
+    blob.style.transition = '';
+    _sidebarBlobLastTop = targetTop;
+    return;
+  }
+
+  var goingDown = targetTop > _sidebarBlobLastTop;
+  blob.style.transformOrigin = goingDown ? 'center top' : 'center bottom';
+
+  // Phase 1: stretch toward the target while still at the old position
+  blob.style.transition = 'transform 0.3s cubic-bezier(0.42,0,0.58,1)';
+  blob.style.transform = 'scaleY(1.8)';
+
+  setTimeout(function(){
+    blob.style.transition = 'top 0.5s cubic-bezier(0.25,1,0.5,1), transform 0.45s cubic-bezier(0.25,1,0.5,1)';
+    blob.style.top = targetTop + 'px';
+    blob.style.transform = 'scaleY(1)';
+  }, 140);
+
+  _sidebarBlobLastTop = targetTop;
 }
 
 function buildMobileNav(){
   var nav=document.getElementById('mobileNavInner');
   if(!nav) return;
-  nav.innerHTML=MOBILE_NAV.map(function(item){
+  nav.innerHTML='<div class="mnav-blob" id="mnavBlob"></div>'
+    + MOBILE_NAV.map(function(item){
     return '<button class="mobile-nav-item'+(currentView===item.id?' active':'')+'" data-view="'+item.id+'" onclick="navigate(\''+item.id+'\')">'
       +'<i class="fa-solid '+item.icon+'"></i>'
-      +'<span>'+item.label+'</span>'
+      +'<span class="mnav-label">'+item.label+'</span>'
       +'</button>';
   }).join('');
+  nav.querySelectorAll('.mobile-nav-item').forEach(function(btn){
+    btn.addEventListener('click', mnavCreateRipple);
+  });
+}
+
+/* Liquid blob para el mobile nav — replica exacta de la mecánica de nav.html:
+   1) mide el botón activo real (getBoundingClientRect) → así el blob siempre
+      encaja con el ancho real del botón (ícono + texto), nunca un tamaño fijo.
+   2) detecta dirección comparando con la última posición.
+   3) fase 1: estira (scaleX) hacia el destino desde el origen correcto
+      (left/right center según dirección) mientras sigue en la posición vieja.
+   4) fase 2 (tras un timeout corto): mueve left/width al botón destino y
+      vuelve a scaleX(1) con una curva más elástica — efecto "aterrizaje". */
+var _mnavBlobLastLeft = null;
+
+function moveMobileNavBlob(instant){
+  var blob = document.getElementById('mnavBlob');
+  var inner = document.getElementById('mobileNavInner');
+  var activeBtn = inner ? inner.querySelector('.mobile-nav-item.active') : null;
+  if(!blob || !inner || !activeBtn){ if(blob) blob.classList.remove('show'); return; }
+
+  var btnRect = activeBtn.getBoundingClientRect();
+  var innerRect = inner.getBoundingClientRect();
+  var pad = 4; // pequeño respiro horizontal, igual de sutil que en el nav de referencia
+  var targetLeft = (btnRect.left - innerRect.left) + pad;
+  var targetWidth = btnRect.width - (pad * 2);
+
+  blob.classList.add('show');
+
+  if(instant || _mnavBlobLastLeft === null){
+    blob.style.transition = 'none';
+    blob.style.width = targetWidth + 'px';
+    blob.style.left = targetLeft + 'px';
+    blob.style.transform = 'scaleX(1)';
+    void blob.offsetHeight; // forzar reflow para que la próxima transición no se mezcle con esta
+    blob.style.transition = '';
+    _mnavBlobLastLeft = targetLeft;
+    return;
+  }
+
+  var goingRight = targetLeft > _mnavBlobLastLeft;
+  blob.style.transformOrigin = goingRight ? 'left center' : 'right center';
+
+  // Fase 1: estiramiento líquido hacia el destino
+  blob.style.transition = 'transform 0.3s cubic-bezier(0.42,0,0.58,1)';
+  blob.style.transform = 'scaleX(2.2)';
+
+  setTimeout(function(){
+    // Fase 2: aterriza en la posición/ancho real del botón destino
+    blob.style.transition = 'left 0.5s cubic-bezier(0.25,1,0.5,1), width 0.3s ease, transform 0.45s cubic-bezier(0.25,1,0.5,1)';
+    blob.style.width = targetWidth + 'px';
+    blob.style.left = targetLeft + 'px';
+    blob.style.transform = 'scaleX(1)';
+  }, 160);
+
+  _mnavBlobLastLeft = targetLeft;
+}
+
+function mnavCreateRipple(e){
+  var btn = e.currentTarget;
+  var circle = document.createElement('span');
+  circle.className = 'mnav-ripple';
+  var rect = btn.getBoundingClientRect();
+  var size = Math.max(rect.width, rect.height);
+  circle.style.width = circle.style.height = size + 'px';
+  var x = (e.clientX || (rect.left+rect.width/2)) - rect.left - size/2;
+  var y = (e.clientY || (rect.top+rect.height/2)) - rect.top - size/2;
+  circle.style.left = x + 'px';
+  circle.style.top = y + 'px';
+  btn.appendChild(circle);
+  circle.addEventListener('animationend', function(){ circle.remove(); });
 }
 
 function toggleSidebar(){
   sidebarCollapsed=!sidebarCollapsed;
   document.getElementById('sidebar').classList.toggle('collapsed',sidebarCollapsed);
   document.getElementById('collapseIcon').className='fa-solid '+(sidebarCollapsed?'fa-chevron-right':'fa-chevron-left');
+  if(!sidebarCollapsed){
+    setTimeout(function(){ moveSidebarBlob(true); }, 320);
+  }
 }
 
 /* ════════════════════════════
@@ -395,8 +521,18 @@ function setAthleteView(m){
 }
 
 function deleteAthlete(id){
-  state.atletas=state.atletas.filter(function(a){return a.id!==id});
-  toast('Atleta eliminado','warn');renderAthletes();buildSidebar();
+  var a=state.atletas.find(function(x){return x.id===id});
+  var nombre=a?(a.nombre+' '+a.apellido):'este atleta';
+  showConfirm({
+    title:'Eliminar atleta',
+    message:'¿Seguro que quieres eliminar a '+nombre+'? Se perderán también sus rutinas, métricas, pagos y sesiones asociadas. Esta acción no se puede deshacer.',
+    confirmText:'Eliminar', danger:true,
+    onConfirm:function(){
+      state.atletas=state.atletas.filter(function(x){return x.id!==id});
+      saveState();
+      toast('Atleta eliminado','warn');renderAthletes();buildSidebar();
+    }
+  });
 }
 
 function showAthleteDetail(id){
@@ -406,6 +542,7 @@ function showAthleteDetail(id){
   var py=state.pagos.filter(function(p){return p.atletaId===id});
   var pp=py.filter(function(p){return p.estado==='Pendiente'||p.estado==='Vencido'}).length;
   var sesiones=(state.sesiones||[]).filter(function(s){return s.atletaId===id}).slice().reverse();
+  var sesionDias=PLAN_DIAS.filter(function(d){ return sesiones.some(function(s){return s.dia===d}); });
   showModal('<div class="modal modal-wide">'
     +'<div class="modal-header"><h2 class="modal-title">'+esc(a.nombre)+' '+esc(a.apellido)+'</h2><button class="modal-close" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>'
     +'<div style="display:flex;gap:18px;align-items:flex-start;margin-bottom:20px;padding:16px 18px;background:var(--bg3);border-radius:var(--radius);border:1px solid var(--line)">'
@@ -461,23 +598,36 @@ function showAthleteDetail(id){
     +'</div>'
 
     +(sesiones.length>0?'<div style="margin-bottom:16px">'
-    +'<p class="section-label"><span><i class="fa-solid fa-clock-rotate-left" style="margin-right:7px"></i>Historial de sesiones ('+sesiones.length+')</span></p>'
-    +'<div style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto">'
-    +sesiones.map(function(s){
-      var r=state.rutinas.find(function(x){return x.id===s.rutinaId});
-      var musc=Object.keys(s.musculos||{});
-      var completados=musc.filter(function(m){return s.musculos[m].completado}).length;
-      return '<div style="background:var(--bg3);border:1px solid var(--line);border-radius:var(--radius-sm);padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;cursor:pointer" onclick="showSessionDetail('+s.id+')">'
-        +'<div><p class="text-sm" style="color:var(--text2)">'+esc(s.fecha)+' · '+esc(r?r.nombre:'Rutina')+'</p>'
-        +'<p class="text-xs text-muted">'+esc(s.horaInicio)+' – '+esc(s.horaFin)+' · '+fmtDuration(s.duracionTotalSeg)+' · '+completados+'/'+musc.length+' músculos completados</p></div>'
-        +'<i class="fa-solid fa-chevron-right text-muted" style="font-size:0.7rem"></i></div>';
-    }).join('')
-    +'</div></div>':'')
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap">'
+    +'<p class="section-label" style="margin:0"><span><i class="fa-solid fa-clock-rotate-left" style="margin-right:7px"></i>Historial de sesiones ('+sesiones.length+')</span></p>'
+    +(sesionDias.length>1?'<select class="form-control" id="athleteSessionDayFilter" style="width:auto;font-size:0.75rem;padding:5px 8px" onchange="renderAthleteSessions('+a.id+')"><option value="">Todos los días</option>'+sesionDias.map(function(d){return '<option>'+d+'</option>'}).join('')+'</select>':'')
+    +'</div>'
+    +'<div id="athleteSessionsList" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto"></div>'
+    +'</div>':'')
 
     +'<div class="modal-footer">'
-    +'<button class="btn btn-danger btn-md" onclick="deleteAthlete('+a.id+');closeModal()"><i class="fa-solid fa-trash"></i> Eliminar</button>'
+    +'<button class="btn btn-danger btn-md" onclick="deleteAthlete('+a.id+')"><i class="fa-solid fa-trash"></i> Eliminar</button>'
     +'<button class="btn btn-outline btn-md" onclick="closeModalThen(function(){openAthleteModal('+a.id+')})"><i class="fa-solid fa-pen"></i> Editar</button>'
     +'</div></div>');
+  renderAthleteSessions(id);
+}
+
+/* Lista de sesiones del alumno, filtrable por día (selector "Todos los días" / día específico).
+   Se usa tanto para la carga inicial como para refrescar cuando cambia el filtro. */
+function renderAthleteSessions(athleteId){
+  var box=document.getElementById('athleteSessionsList');
+  if(!box) return;
+  var filterDia=(document.getElementById('athleteSessionDayFilter')||{value:''}).value;
+  var sesiones=(state.sesiones||[]).filter(function(s){return s.atletaId===athleteId && (!filterDia || s.dia===filterDia)}).slice().reverse();
+  box.innerHTML = sesiones.length ? sesiones.map(function(s){
+    var r=state.rutinas.find(function(x){return x.id===s.rutinaId});
+    var musc=Object.keys(s.musculos||{});
+    var completados=musc.filter(function(m){return s.musculos[m].completado}).length;
+    return '<div style="background:var(--bg3);border:1px solid var(--line);border-radius:var(--radius-sm);padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;cursor:pointer" onclick="showSessionDetail('+s.id+')">'
+      +'<div><p class="text-sm" style="color:var(--text2)">'+esc(s.fecha)+' · '+esc(r?r.nombre:'Rutina')+(s.dia?' · <span style="color:var(--coral2)">'+esc(s.dia)+'</span>':'')+'</p>'
+      +'<p class="text-xs text-muted">'+esc(s.horaInicio)+' – '+esc(s.horaFin)+' · '+fmtDuration(s.duracionTotalSeg)+' · '+completados+'/'+musc.length+' músculos completados</p></div>'
+      +'<i class="fa-solid fa-chevron-right text-muted" style="font-size:0.7rem"></i></div>';
+  }).join('') : '<p class="text-sm text-muted" style="padding:6px 0">Sin sesiones para este filtro.</p>';
 }
 
 function openAthleteModal(id){
@@ -599,7 +749,7 @@ var MUSCLE_ICONS = {
 /* ── Colores del mapa muscular ── */
 var BM_COLOR_DEFAULT = '#23232E';  // músculo sin actividad
 var BM_COLOR_BORDER  = 'rgba(255,255,255,0.10)';
-var BM_COLOR_ACTIVE  = '#FF2D55';  // coral — agregado al constructor
+var BM_COLOR_ACTIVE  = '#F1FF0A';  // coral — agregado al constructor
 var BM_COLOR_PENDING = '#FF9F0A';  // ámbar — pendiente en sesión
 var BM_COLOR_DONE    = '#30D158';  // verde — completado en sesión
 
@@ -631,8 +781,205 @@ var bmRoot        = null;
 var bmSessionRoot = null;
 
 /* ── Builder state ── */
-var builderData  = {};  // { 'Bíceps': { exercises:[], done:false } }
-var _exercises   = [];
+var builderData  = {};  // { 'Bíceps': { exercises:[], done:false } } — datos del día activo
+var builderDays  = [];  // ['Lunes','Miércoles','Viernes'] — días sugeridos para los ejercicios
+
+/* ── Multi-day plan state ── */
+var weekPlan     = {};  // { 'Lunes': { enfoque:'Empuje', muscles:{ 'Bíceps':{...} } }, ... }
+var activePlanDay = null; // día seleccionado actualmente en el constructor
+
+var DIAS_SEMANA = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+
+/* ══════════════════════════════════════════
+   DAYS PICKER — selector opcional de días de entrenamiento
+   Siempre visible arriba del constructor; pre-llena el campo
+   "Día" de cada ejercicio sin alterar el flujo del muñeco.
+══════════════════════════════════════════ */
+function renderDaysPicker(){
+  var pop = document.getElementById('daysPickerPop');
+  if(!pop) return;
+  pop.innerHTML = '<p class="days-picker-title">Días de entrenamiento</p>'
+    + '<div class="days-picker-grid">'
+    + DIAS_SEMANA.map(function(d){
+        var checked = builderDays.indexOf(d) !== -1;
+        return '<div class="day-check'+(checked?' checked':'')+'" onclick="toggleBuilderDay(\''+d+'\')">'
+          + '<div class="day-check-box"><i class="fa-solid fa-check"></i></div>'
+          + '<span class="day-check-label">'+d+'</span>'
+          + '</div>';
+      }).join('')
+    + '</div>'
+    + (builderDays.length>0?'<button class="days-picker-clear" onclick="clearBuilderDays()"><i class="fa-solid fa-rotate-left" style="margin-right:5px"></i>Limpiar selección</button>':'');
+  updateDaysPickerBtn();
+}
+
+function updateDaysPickerBtn(){
+  var btn = document.getElementById('daysPickerBtn');
+  var lbl = document.getElementById('daysPickerLabel');
+  if(!btn || !lbl) return;
+  if(builderDays.length === 0){
+    lbl.textContent = 'Días';
+    btn.classList.remove('has-days');
+  } else if(builderDays.length === 1){
+    lbl.textContent = builderDays[0];
+    btn.classList.add('has-days');
+  } else {
+    lbl.textContent = builderDays.length+' días';
+    btn.classList.add('has-days');
+  }
+}
+
+function toggleBuilderDay(d){
+  var idx = builderDays.indexOf(d);
+  if(idx === -1) builderDays.push(d);
+  else builderDays.splice(idx,1);
+  builderDays.sort(function(a,b){return DIAS_SEMANA.indexOf(a)-DIAS_SEMANA.indexOf(b)});
+  renderDaysPicker();
+}
+
+function clearBuilderDays(){
+  builderDays = [];
+  renderDaysPicker();
+}
+
+function toggleDaysPicker(){
+  var pop = document.getElementById('daysPickerPop');
+  if(!pop) return;
+  var willOpen = !pop.classList.contains('open');
+  if(willOpen){ renderDaysPicker(); }
+  pop.classList.toggle('open', willOpen);
+}
+
+/* Cerrar el popover al hacer clic afuera */
+document.addEventListener('click', function(e){
+  var wrap = document.getElementById('daysPickerWrap');
+  var pop = document.getElementById('daysPickerPop');
+  if(!wrap || !pop || !pop.classList.contains('open')) return;
+  if(!wrap.contains(e.target)) pop.classList.remove('open');
+});
+
+/* Día sugerido para un ejercicio nuevo: si hay un solo día elegido arriba, se usa directo.
+   Si hay varios, se sugiere el primero que aún no tenga ejercicios asignados (round-robin simple). */
+function suggestedDay(){
+  if(builderDays.length === 0) return '';
+  if(builderDays.length === 1) return builderDays[0];
+  // Round-robin: contar cuántos ejercicios totales hay por cada día sugerido y elegir el que tenga menos
+  var counts = {};
+  builderDays.forEach(function(d){ counts[d] = 0; });
+  Object.keys(builderData).forEach(function(m){
+    builderData[m].exercises.forEach(function(e){
+      if(e.dia && counts.hasOwnProperty(e.dia)) counts[e.dia]++;
+    });
+  });
+  var best = builderDays[0];
+  builderDays.forEach(function(d){ if(counts[d] < counts[best]) best = d; });
+  return best;
+}
+
+/* ══════════════════════════════════════════
+   MULTI-DAY TABS — sistema de pestañas por día
+══════════════════════════════════════════ */
+
+var PLAN_DIAS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+
+/* Guarda los datos del día activo en weekPlan antes de cambiar */
+function saveActiveDay(){
+  if(!activePlanDay) return;
+  if(!weekPlan[activePlanDay]) weekPlan[activePlanDay] = { enfoque:'', muscles:{} };
+  weekPlan[activePlanDay].muscles = JSON.parse(JSON.stringify(builderData));
+  // Guardar enfoque del día desde el input
+  var enfoqueEl = document.getElementById('builderDayFocus');
+  if(enfoqueEl) weekPlan[activePlanDay].enfoque = enfoqueEl.value;
+}
+
+/* Carga los datos del día en builderData */
+function loadDay(dia){
+  if(!weekPlan[dia]) weekPlan[dia] = { enfoque:'', muscles:{} };
+  builderData = JSON.parse(JSON.stringify(weekPlan[dia].muscles));
+}
+
+/* Cambia al día seleccionado */
+function switchPlanDay(dia){
+  saveActiveDay();
+  activePlanDay = dia;
+  loadDay(dia);
+  renderDaysTabs();
+  // Actualizar input de enfoque del día
+  var enfoqueEl = document.getElementById('builderDayFocus');
+  if(enfoqueEl) enfoqueEl.value = (weekPlan[dia] && weekPlan[dia].enfoque) || '';
+  // Re-renderizar el modelo para el nuevo día
+  bmRender(bmRoot, bmCurrentView, 'build');
+  updateBuilderSummary();
+}
+
+/* Activa o desactiva un día del plan */
+function togglePlanDay(dia){
+  if(weekPlan[dia] !== undefined){
+    // Ya está activo — si tiene ejercicios, confirmar eliminación
+    var hasEx = Object.keys(weekPlan[dia].muscles || {}).length > 0;
+    if(hasEx){
+      showConfirm({
+        title:'Quitar día',
+        message:'¿Eliminar todos los ejercicios de '+dia+'? Esta acción no se puede deshacer.',
+        confirmText:'Eliminar', danger:true,
+        onConfirm:function(){ _doTogglePlanDayOff(dia); }
+      });
+      return;
+    }
+    _doTogglePlanDayOff(dia);
+  } else {
+    // Agregar el día
+    weekPlan[dia] = { enfoque:'', muscles:{} };
+    activePlanDay = dia;
+    loadDay(dia);
+    renderDaysTabs();
+    bmRender(bmRoot, bmCurrentView, 'build');
+    updateBuilderSummary();
+  }
+}
+function _doTogglePlanDayOff(dia){
+  delete weekPlan[dia];
+  if(activePlanDay === dia){
+    var remaining = PLAN_DIAS.filter(function(d){ return weekPlan[d] !== undefined; });
+    activePlanDay = remaining.length > 0 ? remaining[0] : null;
+    if(activePlanDay) loadDay(activePlanDay);
+    else builderData = {};
+  }
+  renderDaysTabs();
+  bmRender(bmRoot, bmCurrentView, 'build');
+  updateBuilderSummary();
+}
+
+/* Renderiza los tabs de días */
+function renderDaysTabs(){
+  var container = document.getElementById('builderDaysTabs');
+  if(!container) return;
+  var activeDays = PLAN_DIAS.filter(function(d){ return weekPlan[d] !== undefined; });
+  container.innerHTML =
+    '<div class="bdt-label">Días del plan:</div>'
+    + PLAN_DIAS.map(function(d){
+        var isActive = weekPlan[d] !== undefined;
+        var isCurrent = d === activePlanDay;
+        var muscleCnt = isActive ? Object.keys(weekPlan[d].muscles || {}).length : 0;
+        return '<button class="bdt-tab'
+          + (isActive ? ' bdt-tab--on' : '')
+          + (isCurrent ? ' bdt-tab--current' : '')
+          + '" onclick="isActiveDay(\'' + d + '\') ? switchPlanDay(\'' + d + '\') : togglePlanDay(\'' + d + '\')">'
+          + '<span class="bdt-day">' + d.slice(0,3) + '</span>'
+          + (isActive && muscleCnt > 0 ? '<span class="bdt-cnt">' + muscleCnt + '</span>' : '')
+          + '</button>';
+      }).join('')
+    + '<div class="bdt-sep"></div>'
+    + (activePlanDay
+        ? '<div class="bdt-enfoque-wrap"><i class="fa-solid fa-pen-nib" style="color:var(--text4);font-size:0.65rem"></i>'
+          + '<input id="builderDayFocus" class="bdt-enfoque-input" placeholder="Enfoque del día (ej: Empuje, Pierna…)" value="'
+          + esc((weekPlan[activePlanDay] && weekPlan[activePlanDay].enfoque) || '') + '"'
+          + ' oninput="if(weekPlan[activePlanDay])weekPlan[activePlanDay].enfoque=this.value">'
+          + '</div>'
+        : '<span class="bdt-hint">Activa un día para comenzar</span>');
+}
+
+function isActiveDay(d){ return weekPlan[d] !== undefined; }
+
 
 /* ── Color a pintar para un grupo muscular según el modo ── */
 function bmColorForGroup(name, mode){
@@ -705,8 +1052,14 @@ function bmSwitchView(view){
 
 /* ── Cuando el usuario toca un músculo en el modelo (constructor) ── */
 function bmOnClick(muscleName){
+  if(!activePlanDay){
+    toast('Activa un día primero tocando uno de los botones de días arriba','warn');
+    return;
+  }
   if(!builderData[muscleName]){
     builderData[muscleName] = { exercises:[], done:false };
+    // Sincronizar al weekPlan del día activo
+    if(weekPlan[activePlanDay]) weekPlan[activePlanDay].muscles = builderData;
     bmRender(bmRoot, bmCurrentView, 'build');
     updateBuilderSummary();
   }
@@ -724,6 +1077,8 @@ function switchRutinaTab(tab){
     if(ver)   ver.style.display='none';
     if(btnC){ btnC.classList.add('rtab-active'); }
     if(btnV){ btnV.classList.remove('rtab-active'); }
+    updateDaysPickerBtn();
+    renderDaysTabs();
     // Init body-muscles if not yet done
     setTimeout(function(){
       if(!bmRoot) initBodyMuscles();
@@ -742,11 +1097,18 @@ function switchRutinaTab(tab){
    BUILDER CORE
 ══════════════════════════════════════════ */
 function getBuilderTotals(){
-  var muscles=Object.keys(builderData), totalEx=0, dias=new Set();
-  muscles.forEach(function(m){
-    builderData[m].exercises.forEach(function(e){ totalEx++; if(e.dia) dias.add(e.dia); });
+  // Guardar día activo antes de contar
+  saveActiveDay();
+  var muscles=new Set(), totalEx=0, dias=new Set();
+  PLAN_DIAS.forEach(function(d){
+    if(!weekPlan[d]) return;
+    dias.add(d);
+    Object.keys(weekPlan[d].muscles || {}).forEach(function(m){
+      muscles.add(m);
+      totalEx += weekPlan[d].muscles[m].exercises.length;
+    });
   });
-  return {muscles:muscles.length, exercises:totalEx, dias:dias.size, min:totalEx*8};
+  return {muscles:muscles.size, exercises:totalEx, dias:dias.size, min:totalEx*8};
 }
 
 function updateBuilderSummary(){
@@ -860,6 +1222,7 @@ function buildBuilderMuscleCardHtml(muscle){
   var DIAS=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
   var formHtml = '';
   if(_muscleCard.formOpen){
+    var sugDay = suggestedDay();
     formHtml = '<div class="mc-form">'
       + '<div class="mc-form-row cols1">'
       +   '<div class="mc-field"><label>Ejercicio *</label>'
@@ -871,8 +1234,8 @@ function buildBuilderMuscleCardHtml(muscle){
       +   '<div class="mc-field"><label>Peso</label><input id="bmfi-pes-'+sid+'" placeholder="kg" class="form-control"></div>'
       + '</div>'
       + '<div class="mc-form-row cols2">'
-      +   '<div class="mc-field"><label>Día</label><select id="bmfi-dia-'+sid+'" class="form-control">'
-      +   '<option value="">Sin asignar</option>'+DIAS.map(function(d){return '<option>'+d+'</option>'}).join('')
+      +   '<div class="mc-field"><label>Día'+(sugDay?' <span style="color:var(--coral2);font-weight:400">· sugerido</span>':'')+'</label><select id="bmfi-dia-'+sid+'" class="form-control">'
+      +   '<option value=""'+(!sugDay?' selected':'')+'>Sin asignar</option>'+DIAS.map(function(d){return '<option'+(d===sugDay?' selected':'')+'>'+d+'</option>'}).join('')
       +   '</select></div>'
       +   '<div class="mc-field"><label>Descanso</label><input id="bmfi-des-'+sid+'" value="90s" class="form-control"></div>'
       + '</div>'
@@ -884,7 +1247,7 @@ function buildBuilderMuscleCardHtml(muscle){
 
   return '<div class="modal modal-muscle">'
     + '<div class="mc-head">'
-    +   '<div class="mc-icon" style="background:rgba(255,45,85,0.15);border:1px solid rgba(255,45,85,0.3)">'
+    +   '<div class="mc-icon" style="background:rgba(241,255,10,0.15);border:1px solid rgba(241,255,10,0.3)">'
     +     '<i class="fa-solid '+icon+'" style="font-size:0.72rem;color:var(--coral2)"></i>'
     +   '</div>'
     +   '<span class="mc-name">'+esc(muscle)+'</span>'
@@ -915,7 +1278,7 @@ function builderToggleForm(){
 
 function builderAddSuggested(muscle, exName){
   if(!builderData[muscle]) return;
-  builderData[muscle].exercises.push({nombre:exName, series:4, reps:'8-12', peso:'', descanso:'90s', dia:''});
+  builderData[muscle].exercises.push({nombre:exName, series:4, reps:'8-12', peso:'', descanso:'90s', dia:suggestedDay()});
   updateBuilderSummary();
   renderMuscleCard();
 }
@@ -952,9 +1315,19 @@ function builderRemoveMuscle(muscle){
 
 function clearBuilderAll(){
   builderData = {};
+  builderDays = [];
+  weekPlan = {};
+  activePlanDay = null;
+  renderDaysPicker();
+  renderDaysTabs();
   bmRender(bmRoot, bmCurrentView, 'build');
   closeMuscleCard();
   updateBuilderSummary();
+  // Limpiar campos de config
+  var nameEl = document.getElementById('builderRutinaName');
+  var focusEl = document.getElementById('builderRutinaFocus');
+  if(nameEl) nameEl.value = '';
+  if(focusEl) focusEl.value = '';
 }
 
 /* ══════════════════════════════════════════
@@ -984,6 +1357,11 @@ function showTutorialStep(){
     backdrop=document.createElement('div');
     backdrop.id='tutorialBackdrop';
     backdrop.className='tutorial-backdrop';
+    // Cerrar si el usuario toca fuera de la burbuja (evita que la capa quede
+    // "atascada" bloqueando toda la app si el usuario abandona el tutorial)
+    backdrop.addEventListener('click', function(e){
+      if(e.target === backdrop) endTutorial();
+    });
     document.body.appendChild(backdrop);
   }
   var rect = target ? target.getBoundingClientRect() : {left:16,top:16,width:0,height:0,bottom:16,right:16};
@@ -999,6 +1377,7 @@ function showTutorialStep(){
   var left = Math.min(Math.max(rect.left, 12), window.innerWidth-292);
   backdrop.innerHTML = highlightHtml
     + '<div class="tutorial-bubble" style="left:'+left+'px;'+bubbleStyle+'">'
+    +   '<button class="tutorial-bubble-close" onclick="endTutorial()" title="Cerrar tutorial"><i class="fa-solid fa-xmark"></i></button>'
     +   '<p class="tutorial-bubble-title">'+esc(step.title)+'</p>'
     +   '<p class="tutorial-bubble-text">'+esc(step.text)+'</p>'
     +   '<div class="tutorial-bubble-actions">'
@@ -1037,9 +1416,10 @@ function guessMuscleByExerciseName(nombre){
   return found;
 }
 
-function groupRoutineByMuscle(r){
+function groupRoutineByMuscle(r, dia){
   var groups={};
   (r.ejercicios||[]).forEach(function(e){
+    if(dia && e.dia !== dia) return; // si se pidió un día específico, solo sus ejercicios
     var m = (e.notas && MUSCLE_ICONS[e.notas]) ? e.notas : (guessMuscleByExerciseName(e.nombre) || 'General');
     if(!groups[m]) groups[m]=[];
     groups[m].push({nombre:e.nombre, series:e.series, reps:e.reps, peso:e.peso, descanso:e.descanso, log:[]});
@@ -1047,12 +1427,62 @@ function groupRoutineByMuscle(r){
   return groups;
 }
 
+/* Días de la plantilla que realmente tienen ejercicios asignados, en orden Lunes→Domingo */
+function diasConEjercicios(r){
+  var set={};
+  (r.ejercicios||[]).forEach(function(e){ if(e.dia) set[e.dia]=true; });
+  return PLAN_DIAS.filter(function(d){ return set[d]; });
+}
+
+/* Músculos que le tocan a la plantilla en un día específico (para mostrar en el selector) */
+function diaMusculos(r, dia){
+  var list=[];
+  (r.ejercicios||[]).forEach(function(e){
+    if(e.dia===dia && e.notas && list.indexOf(e.notas)===-1) list.push(e.notas);
+  });
+  return list;
+}
+
 function startLiveSession(atletaId, rutinaId){
   var r=state.rutinas.find(function(x){return x.id===rutinaId});
   if(!r){ toast('Rutina no encontrada','error'); return; }
-  var groups=groupRoutineByMuscle(r);
+  var dias = diasConEjercicios(r);
+  if(dias.length <= 1){
+    // Rutina de un solo día (o plantilla antigua sin días) → comportamiento de siempre, sin preguntar
+    startLiveSessionForDay(atletaId, rutinaId, dias[0] || null);
+    return;
+  }
+  showDayPickerModal(atletaId, rutinaId, dias);
+}
+
+/* Mini-modal: "¿Qué día entrenas hoy?" — el entrenador elige manualmente
+   cuál de los días de la plantilla va a entrenar el alumno en esta sesión. */
+function showDayPickerModal(atletaId, rutinaId, dias){
+  var r=state.rutinas.find(function(x){return x.id===rutinaId});
+  if(!r) return;
+  showModal('<div class="modal">'
+    + '<div class="modal-header"><h2 class="modal-title"><i class="fa-solid fa-calendar-day" style="margin-right:8px;color:var(--coral2)"></i>¿Qué día entrena hoy?</h2>'
+    + '<button class="modal-close" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>'
+    + '<p class="text-sm text-muted" style="margin-bottom:14px">'+esc(r.nombre)+' · elige el día de la plantilla que toca entrenar</p>'
+    + '<div style="display:flex;flex-direction:column;gap:8px">'
+    + dias.map(function(d){
+        var muscles = diaMusculos(r, d);
+        var ef = (r.planSemanal && r.planSemanal[d] && r.planSemanal[d].enfoque) || '';
+        return '<button class="btn btn-outline btn-md" style="justify-content:space-between;text-align:left;padding:12px 14px;height:auto" onclick="startLiveSessionForDay('+atletaId+','+rutinaId+',\''+d+'\')">'
+          + '<span><strong>'+d+'</strong>'+(ef?' <span class="text-xs text-muted">· '+esc(ef)+'</span>':'')
+          + '<br><span class="text-xs text-muted">'+esc(muscles.join(', ') || 'Sin músculos')+'</span></span>'
+          + '<i class="fa-solid fa-chevron-right" style="flex:none;margin-left:8px"></i>'
+          + '</button>';
+      }).join('')
+    + '</div></div>');
+}
+
+function startLiveSessionForDay(atletaId, rutinaId, dia){
+  var r=state.rutinas.find(function(x){return x.id===rutinaId});
+  if(!r){ toast('Rutina no encontrada','error'); return; }
+  var groups=groupRoutineByMuscle(r, dia);
   if(Object.keys(groups).length===0){ toast('Esta rutina no tiene ejercicios','warn'); return; }
-  liveSession={ atletaId:atletaId, rutinaId:rutinaId, startedAt:Date.now(), finishedAt:null, timerId:null, muscles:{} };
+  liveSession={ atletaId:atletaId, rutinaId:rutinaId, dia:dia||null, startedAt:Date.now(), finishedAt:null, timerId:null, muscles:{} };
   Object.keys(groups).forEach(function(m){
     liveSession.muscles[m]={ exercises:groups[m], completado:false, startedAt:null, finishedAt:null };
   });
@@ -1074,7 +1504,7 @@ function renderSessionView(){
     + '<div class="session-header">'
     +   '<div style="flex:1;min-width:160px">'
     +     '<h1 class="page-title" style="font-size:1.3rem;margin-bottom:2px"><span class="page-title-bar"></span>Sesión en vivo</h1>'
-    +     '<p class="page-sub" style="margin:0">'+esc(a?(a.nombre+' '+a.apellido):'—')+' · '+esc(r?r.nombre:'—')+'</p>'
+    +     '<p class="page-sub" style="margin:0">'+esc(a?(a.nombre+' '+a.apellido):'—')+' · '+esc(r?r.nombre:'—')+(liveSession.dia?' · <span style="color:var(--coral2);font-weight:600">'+esc(liveSession.dia)+'</span>':'')+'</p>'
     +   '</div>'
     +   '<div class="session-timer-box">'
     +     '<p class="session-timer" id="sessionTimer">00:00</p>'
@@ -1192,7 +1622,7 @@ function buildSessionMuscleCardHtml(muscle){
 
   return '<div class="modal modal-muscle">'
     + '<div class="mc-head">'
-    +   '<div class="mc-icon" style="background:'+(d.completado?'rgba(48,209,88,0.15)':'rgba(255,45,85,0.15)')+';border:1px solid '+(d.completado?'rgba(48,209,88,0.3)':'rgba(255,45,85,0.3)')+'">'
+    +   '<div class="mc-icon" style="background:'+(d.completado?'rgba(48,209,88,0.15)':'rgba(241,255,10,0.15)')+';border:1px solid '+(d.completado?'rgba(48,209,88,0.3)':'rgba(241,255,10,0.3)')+'">'
     +     '<i class="fa-solid '+icon+'" style="font-size:0.72rem;color:'+(d.completado?'var(--green)':'var(--coral2)')+'"></i>'
     +   '</div>'
     +   '<span class="mc-name">'+esc(muscle)+'</span>'
@@ -1250,8 +1680,17 @@ function finishLiveSession(){
   if(!liveSession) return;
   var pendientes=Object.keys(liveSession.muscles).filter(function(m){ return !liveSession.muscles[m].completado; });
   if(pendientes.length>0){
-    if(!confirm('Quedan '+pendientes.length+' músculo(s) sin marcar como completados ('+pendientes.join(', ')+'). ¿Finalizar la rutina igual?')) return;
+    showConfirm({
+      title:'Finalizar sesión',
+      message:'Quedan '+pendientes.length+' músculo(s) sin marcar como completados ('+pendientes.join(', ')+'). ¿Finalizar la rutina igual?',
+      confirmText:'Finalizar', danger:true,
+      onConfirm:function(){ _doFinishLiveSession(); }
+    });
+    return;
   }
+  _doFinishLiveSession();
+}
+function _doFinishLiveSession(){
   liveSession.finishedAt=Date.now();
   var totalSec=Math.max(0,Math.round((liveSession.finishedAt-liveSession.startedAt)/1000));
   var musculos={};
@@ -1267,6 +1706,7 @@ function finishLiveSession(){
     id: uid(),
     atletaId: liveSession.atletaId,
     rutinaId: liveSession.rutinaId,
+    dia: liveSession.dia || null,
     fecha: today(),
     horaInicio: new Date(liveSession.startedAt).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}),
     horaFin: new Date(liveSession.finishedAt).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}),
@@ -1300,7 +1740,7 @@ function showSessionDetail(id){
   showModal('<div class="modal modal-wide">'
     +'<div class="modal-header"><h2 class="modal-title">'+esc(r?r.nombre:'Sesión')+'</h2>'
     +'<button class="modal-close" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>'
-    +'<p class="text-sm" style="margin-bottom:12px"><i class="fa-solid fa-user text-muted" style="margin-right:6px"></i><strong>'+esc(a?(a.nombre+' '+a.apellido):'—')+'</strong></p>'
+    +'<p class="text-sm" style="margin-bottom:12px"><i class="fa-solid fa-user text-muted" style="margin-right:6px"></i><strong>'+esc(a?(a.nombre+' '+a.apellido):'—')+'</strong>'+(s.dia?' <span style="color:var(--coral2)">· '+esc(s.dia)+'</span>':'')+'</p>'
     +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">'
     +[['Fecha',esc(s.fecha)],['Horario',esc(s.horaInicio)+' – '+esc(s.horaFin)],['Duración',fmtDuration(s.duracionTotalSeg)],['Completados',completados+'/'+musc.length]].map(function(x){
       return '<div style="background:var(--bg3);border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px;text-align:center">'
@@ -1337,71 +1777,111 @@ function showSessionDetail(id){
 
 /* ── Finalize and save routine ── */
 function finalizarRutina(){
-  var muscles = Object.keys(builderData);
-  if(muscles.length === 0){ toast('Agrega al menos un músculo','warn'); return; }
-  var allExercises = [];
-  muscles.forEach(function(muscle){
-    builderData[muscle].exercises.forEach(function(e){
-      allExercises.push({id:uid(), nombre:e.nombre, series:e.series, reps:e.reps,
-        peso:e.peso, descanso:e.descanso, notas:muscle});
+  // Guardar el día activo antes de finalizar
+  saveActiveDay();
+
+  var activeDays = PLAN_DIAS.filter(function(d){ return weekPlan[d] !== undefined; });
+  if(activeDays.length === 0){ toast('Agrega al menos un día con ejercicios','warn'); return; }
+
+  var allMuscles = [];
+  activeDays.forEach(function(dia){
+    Object.keys(weekPlan[dia].muscles || {}).forEach(function(m){
+      if(allMuscles.indexOf(m) === -1) allMuscles.push(m);
     });
   });
+  if(allMuscles.length === 0){ toast('Agrega al menos un músculo en algún día','warn'); return; }
+
+  // Construir lista plana de ejercicios con campo dia y notas=músculo
+  var allExercises = [];
+  activeDays.forEach(function(dia){
+    var dayMuscles = weekPlan[dia].muscles || {};
+    Object.keys(dayMuscles).forEach(function(muscle){
+      dayMuscles[muscle].exercises.forEach(function(e){
+        allExercises.push({id:uid(), nombre:e.nombre, series:e.series, reps:e.reps,
+          peso:e.peso, descanso:e.descanso, dia:dia, notas:muscle});
+      });
+    });
+  });
+
   _exercises = allExercises;
-  var muscleName = muscles.slice(0,2).join(' + ') + (muscles.length>2?' +'+(muscles.length-2)+' más':'');
+
+  // Nombre y enfoque desde config inicial
+  var nombreConfig = (document.getElementById('builderRutinaName')||{value:''}).value.trim();
+  var enfoqueConfig = (document.getElementById('builderRutinaFocus')||{value:''}).value;
+  if(!nombreConfig){
+    var muscleName = allMuscles.slice(0,2).join(' + ') + (allMuscles.length>2?' +'+(allMuscles.length-2)+' más':'');
+    nombreConfig = 'Rutina ' + muscleName;
+  }
+
   editId.routine = null;
+
+  // Resumen de días con enfoque
+  var diasResumenHtml = activeDays.map(function(d){
+    var ef = (weekPlan[d] && weekPlan[d].enfoque) ? ' · ' + weekPlan[d].enfoque : '';
+    var cnt = Object.keys(weekPlan[d].muscles || {}).length;
+    return '<span class="badge badge-gray"><i class="fa-solid fa-calendar-day" style="margin-right:4px;font-size:0.55rem"></i>'
+      + d.slice(0,3) + ef + (cnt ? ' · ' + cnt + 'M' : '') + '</span>';
+  }).join('');
+
   showModal('<div class="modal modal-wide">'
-    + '<div class="modal-header"><h2 class="modal-title">Guardar Rutina</h2>'
+    + '<div class="modal-header"><h2 class="modal-title">Guardar Plantilla</h2>'
     + '<button class="modal-close" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button></div>'
-    + '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:16px">'
-    + muscles.map(function(m){
-        var icon=MUSCLE_ICONS[m]||'fa-circle';
-        return '<span class="badge badge-red"><i class="fa-solid '+icon+'" style="margin-right:4px"></i>'+esc(m)+'</span>';
-      }).join('')
-    + '</div>'
+    + '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:16px">' + diasResumenHtml + '</div>'
     + '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-bottom:12px">'
-    + '<div class="form-group"><label class="form-label">Nombre *</label><input class="form-control" id="rf-nombre" value="Rutina '+esc(muscleName)+'"></div>'
-    + '<div class="form-group"><label class="form-label">Tipo</label><select class="form-control" id="rf-tipo">'+TIPOS_RUTINA.map(function(t){return '<option>'+t+'</option>'}).join('')+'</select></div>'
-    + '<div class="form-group"><label class="form-label">Dificultad</label><select class="form-control" id="rf-dificultad">'+DIFICULTADES.map(function(d){return '<option'+(d==='Media'?' selected':'')+'>'+d+'</option>'}).join('')+'</select></div>'
+    + '<div class="form-group"><label class="form-label">Nombre *</label><input class="form-control" id="rf-nombre" value="' + esc(nombreConfig) + '"></div>'
+    + '<div class="form-group"><label class="form-label">Tipo</label><select class="form-control" id="rf-tipo">'
+    + TIPOS_RUTINA.map(function(t){ return '<option' + ((enfoqueConfig && t.toLowerCase().indexOf(enfoqueConfig.toLowerCase().slice(0,4)) !== -1) ? ' selected' : '') + '>' + t + '</option>'; }).join('')
+    + '</select></div>'
+    + '<div class="form-group"><label class="form-label">Dificultad</label><select class="form-control" id="rf-dificultad">' + DIFICULTADES.map(function(d){return '<option'+(d==='Media'?' selected':'')+'>'+d+'</option>'}).join('') + '</select></div>'
     + '</div>'
-    + '<div class="form-group" style="margin-bottom:12px;background:var(--coral-pale);border:1px solid var(--danger-border);border-radius:var(--radius-sm);padding:10px 12px">'
-    + '<label class="form-label" style="color:var(--coral2)"><i class="fa-solid fa-user-check" style="margin-right:5px"></i>Asignar a atleta *</label>'
-    + '<select class="form-control" id="rf-atletaId"><option value="">Sin asignar</option>'+state.atletas.map(function(a){return '<option value="'+a.id+'">'+esc(a.nombre)+' '+esc(a.apellido)+'</option>'}).join('')+'</select>'
-    + '<p style="font-size:0.68rem;color:var(--text4);margin-top:5px">Si no asignas un atleta, la rutina no aparecerá en su perfil ni podrá iniciarse una sesión en vivo con ella.</p>'
+    + '<div style="background:var(--bg3);border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px">'
+    + '<p style="font-size:0.62rem;font-weight:700;color:var(--text4);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px"><i class="fa-solid fa-calendar-week" style="margin-right:6px;color:var(--coral2)"></i>Plan semanal (' + activeDays.length + ' días)</p>'
+    + activeDays.map(function(d){
+        var ef = (weekPlan[d] && weekPlan[d].enfoque) || '—';
+        var cnt = Object.keys(weekPlan[d].muscles || {}).length;
+        var exCnt = 0;
+        Object.keys(weekPlan[d].muscles || {}).forEach(function(m){ exCnt += weekPlan[d].muscles[m].exercises.length; });
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--line2)">'
+          + '<span class="text-sm" style="color:var(--text2);font-weight:600">' + d + '</span>'
+          + '<span class="text-xs text-muted">' + ef + '</span>'
+          + '<span class="text-xs" style="color:var(--coral2)">' + cnt + ' músc · ' + exCnt + ' ejerc.</span>'
+          + '</div>';
+      }).join('')
     + '</div>'
     + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">'
     + '<div class="form-group"><label class="form-label">Deporte</label><select class="form-control" id="rf-deporte"><option value="">General</option>'+DEPORTES.map(function(d){return '<option>'+esc(d)+'</option>'}).join('')+'</select></div>'
-    + '<div class="form-group"><label class="form-label">Duración (min)</label><input class="form-control" type="number" id="rf-duracion" value="'+(allExercises.length*8||45)+'"></div>'
-    + '<div class="form-group"><label class="form-label">Fecha</label><input class="form-control" type="date" id="rf-fecha" value="'+today()+'"></div>'
+    + '<div class="form-group"><label class="form-label">Duración (min)</label><input class="form-control" type="number" id="rf-duracion" value="' + (allExercises.length*8||45) + '"></div>'
+    + '<div class="form-group"><label class="form-label">Fecha</label><input class="form-control" type="date" id="rf-fecha" value="' + today() + '"></div>'
     + '</div>'
     + '<div class="form-group" style="margin-bottom:12px"><label class="form-label">Descripción</label>'
-    + '<textarea class="form-control" id="rf-descripcion" rows="2">Rutina enfocada en: '+esc(muscles.join(', '))+'</textarea></div>'
-    + '<div class="section-label"><span><i class="fa-solid fa-dumbbell" style="margin-right:7px"></i>Ejercicios ('+allExercises.length+')</span>'
-    + '<button class="btn btn-sm btn-secondary" onclick="addExercise()">＋ Agregar</button></div>'
-    + '<div id="exList" style="display:flex;flex-direction:column;gap:7px;max-height:220px;overflow-y:auto;margin-bottom:8px"></div>'
+    + '<textarea class="form-control" id="rf-descripcion" rows="2">Plantilla ' + activeDays.length + ' días. Enfoque: ' + (enfoqueConfig || 'General') + '. Músculos: ' + esc(allMuscles.join(', ')) + '</textarea></div>'
     + '<div id="rf-err" style="color:var(--coral);font-size:0.78rem;margin-bottom:8px"></div>'
     + '<div class="modal-footer">'
     + '<button class="btn btn-ghost btn-md" onclick="closeModal()">Cancelar</button>'
-    + '<button class="btn btn-primary btn-md" onclick="saveRoutineFromBuilder()"><i class="fa-solid fa-floppy-disk"></i> Guardar Rutina</button>'
+    + '<button class="btn btn-primary btn-md" onclick="saveRoutineFromBuilder()"><i class="fa-solid fa-floppy-disk"></i> Guardar Plantilla</button>'
     + '</div></div>');
-  renderExerciseList();
 }
 
 function saveRoutineFromBuilder(){
   if(!gv('rf-nombre')){ document.getElementById('rf-err').textContent='Nombre requerido'; return; }
-  var atletaIdVal = document.getElementById('rf-atletaId').value;
-  if(!atletaIdVal){
-    if(!confirm('No asignaste esta rutina a ningún atleta: no aparecerá en su perfil ni se podrá iniciar una sesión en vivo con ella. ¿Guardar igual?')) return;
-  }
+  // Construir metadata del weekPlan para guardarlo en la rutina
+  var activeDays = PLAN_DIAS.filter(function(d){ return weekPlan[d] !== undefined; });
+  var planSemanal = {};
+  activeDays.forEach(function(d){
+    planSemanal[d] = { enfoque: (weekPlan[d] && weekPlan[d].enfoque) || '' };
+  });
   var data = {
     nombre:gv('rf-nombre'), tipo:gv('rf-tipo'), dificultad:gv('rf-dificultad'),
     deporte:gv('rf-deporte'), duracion:+(document.getElementById('rf-duracion').value)||60,
     fecha:gv('rf-fecha'), descripcion:gv('rf-descripcion'),
-    atletaId:atletaIdVal?+atletaIdVal:null,
-    ejercicios:JSON.parse(JSON.stringify(_exercises)), activa:true
+    atletaId: null,
+    ejercicios:JSON.parse(JSON.stringify(_exercises)),
+    planSemanal: planSemanal,
+    activa:true
   };
   state.rutinas.push(Object.assign({}, data, {id:uid()}));
   saveState();
-  toast('¡Rutina guardada! ✓', 'success');
+  toast('¡Plantilla guardada! ✓', 'success');
   closeModal();
   clearBuilderAll();
 }
@@ -1565,17 +2045,31 @@ function saveAnotacion(){
 }
 
 function deleteAnotacion(id){
-  state.anotaciones=state.anotaciones.filter(function(n){return n.id!==id});
-  saveState();
-  renderPizarraTimeline();
-  toast('Anotación eliminada','warn');
+  showConfirm({
+    title:'Eliminar anotación',
+    message:'¿Seguro que quieres eliminar esta anotación? Esta acción no se puede deshacer.',
+    confirmText:'Eliminar', danger:true,
+    onConfirm:function(){
+      state.anotaciones=state.anotaciones.filter(function(n){return n.id!==id});
+      saveState();
+      renderPizarraTimeline();
+      toast('Anotación eliminada','warn');
+    }
+  });
 }
 
 function deleteMetric(id){
-  state.logsRendimiento=state.logsRendimiento.filter(function(m){return m.id!==id});
-  saveState();
-  toast('Métrica eliminada','warn');
-  if(_pizarraAthlete!=null) renderPizarraTimeline();
+  showConfirm({
+    title:'Eliminar métrica',
+    message:'¿Seguro que quieres eliminar este registro de métrica? Esta acción no se puede deshacer.',
+    confirmText:'Eliminar', danger:true,
+    onConfirm:function(){
+      state.logsRendimiento=state.logsRendimiento.filter(function(m){return m.id!==id});
+      saveState();
+      toast('Métrica eliminada','warn');
+      if(_pizarraAthlete!=null) renderPizarraTimeline();
+    }
+  });
 }
 
 function openMetricModal(atletaId){
@@ -1681,7 +2175,18 @@ function renderCalendar(){
 
 function prevMonth(){calDate.setMonth(calDate.getMonth()-1);renderCalendar()}
 function nextMonth(){calDate.setMonth(calDate.getMonth()+1);renderCalendar()}
-function deleteEvent(id){state.eventos=state.eventos.filter(function(e){return e.id!==id});toast('Evento eliminado','warn');renderCalendar()}
+function deleteEvent(id){
+  showConfirm({
+    title:'Eliminar evento',
+    message:'¿Seguro que quieres eliminar este evento del calendario? Esta acción no se puede deshacer.',
+    confirmText:'Eliminar', danger:true,
+    onConfirm:function(){
+      state.eventos=state.eventos.filter(function(e){return e.id!==id});
+      saveState();
+      toast('Evento eliminado','warn');renderCalendar();
+    }
+  });
+}
 
 function openDayEvents(ds){
   var evs=state.eventos.filter(function(e){return e.fecha===ds});
@@ -1759,7 +2264,18 @@ function renderNutrition(){
     }).join('')+'</div>';
 }
 
-function deletePlan(id){state.planes=state.planes.filter(function(p){return p.id!==id});toast('Plan eliminado','warn');renderNutrition()}
+function deletePlan(id){
+  showConfirm({
+    title:'Eliminar plan',
+    message:'¿Seguro que quieres eliminar este plan de nutrición? Esta acción no se puede deshacer.',
+    confirmText:'Eliminar', danger:true,
+    onConfirm:function(){
+      state.planes=state.planes.filter(function(p){return p.id!==id});
+      saveState();
+      toast('Plan eliminado','warn');renderNutrition();
+    }
+  });
+}
 
 function openNutritionModal(){
   showModal('<div class="modal modal-wide">'
@@ -1818,7 +2334,18 @@ function markPaid(id){
   state.pagos=state.pagos.map(function(p){return p.id===id?Object.assign({},p,{estado:'Pagado',metodoPago:p.metodoPago||'Transferencia'}):p});
   toast('Marcado como pagado ✓');renderPayments();buildSidebar();
 }
-function deletePayment(id){state.pagos=state.pagos.filter(function(p){return p.id!==id});toast('Registro eliminado','warn');renderPayments();buildSidebar()}
+function deletePayment(id){
+  showConfirm({
+    title:'Eliminar registro de pago',
+    message:'¿Seguro que quieres eliminar este registro de pago? Esta acción no se puede deshacer.',
+    confirmText:'Eliminar', danger:true,
+    onConfirm:function(){
+      state.pagos=state.pagos.filter(function(p){return p.id!==id});
+      saveState();
+      toast('Registro eliminado','warn');renderPayments();buildSidebar();
+    }
+  });
+}
 
 function openPaymentModal(){
   showModal('<div class="modal">'
@@ -1876,7 +2403,18 @@ function showDoc(id){
     +'<div class="modal-footer"><button class="btn btn-ghost btn-md" onclick="closeModal()">Cerrar</button></div></div>');
 }
 
-function deleteDoc(id){state.documentos=state.documentos.filter(function(d){return d.id!==id});toast('Documento eliminado','warn');renderDocs()}
+function deleteDoc(id){
+  showConfirm({
+    title:'Eliminar documento',
+    message:'¿Seguro que quieres eliminar este documento? Esta acción no se puede deshacer.',
+    confirmText:'Eliminar', danger:true,
+    onConfirm:function(){
+      state.documentos=state.documentos.filter(function(d){return d.id!==id});
+      saveState();
+      toast('Documento eliminado','warn');renderDocs();
+    }
+  });
+}
 
 function openDocModal(){
   showModal('<div class="modal">'
@@ -1927,7 +2465,64 @@ function closeModal(){
     _modalClosing = false;
   }
 }
-function handleOvClick(e){if(e.target===e.currentTarget && !_modalClosing) closeModal()}
+function handleOvClick(e){
+  if(e.target!==e.currentTarget || _modalClosing) return;
+  if(document.querySelector('.modal-confirm')){ confirmCancel(); return; }
+  closeModal();
+}
+
+/* ════════════════════════════
+   CONFIRM MODAL
+   Reemplaza el confirm() nativo del navegador por un modal
+   con el diseño del sistema. Uso:
+   showConfirm({
+     title:'Eliminar atleta',
+     message:'¿Seguro que quieres eliminar a Juan Pérez? Esta acción no se puede deshacer.',
+     confirmText:'Eliminar', cancelText:'Cancelar', danger:true,
+     onConfirm:function(){ ...acción real... }
+   });
+════════════════════════════ */
+var _confirmCallback = null;
+var _confirmSnapshot  = null;
+
+function showConfirm(opts){
+  opts = opts || {};
+  _confirmCallback = typeof opts.onConfirm === 'function' ? opts.onConfirm : function(){};
+  // Si ya había un modal abierto (ej. el detalle de un atleta), lo guardamos
+  // para poder restaurarlo si el usuario cancela.
+  var c = document.getElementById('modalContainer');
+  _confirmSnapshot = c.innerHTML || null;
+  var danger = opts.danger !== false; // por defecto las confirmaciones son de "alerta"
+  var icon = opts.icon || (danger ? 'fa-triangle-exclamation' : 'fa-circle-question');
+  showModal('<div class="modal modal-confirm">'
+    + '<div class="confirm-icon'+(danger?' confirm-icon-danger':'')+'"><i class="fa-solid '+icon+'"></i></div>'
+    + (opts.title?'<h3 class="confirm-title">'+esc(opts.title)+'</h3>':'')
+    + '<p class="confirm-text">'+esc(opts.message||'¿Confirmas esta acción?')+'</p>'
+    + '<div class="confirm-actions">'
+    +   '<button class="btn btn-ghost btn-md" onclick="confirmCancel()">'+esc(opts.cancelText||'Cancelar')+'</button>'
+    +   '<button class="btn '+(danger?'btn-danger-solid':'btn-primary')+' btn-md" onclick="confirmAccept()">'+esc(opts.confirmText||'Aceptar')+'</button>'
+    + '</div></div>');
+}
+function confirmAccept(){
+  var cb = _confirmCallback;
+  _confirmCallback = null;
+  _confirmSnapshot = null;
+  closeModal();
+  if(cb) cb();
+}
+function confirmCancel(){
+  var snap = _confirmSnapshot;
+  _confirmCallback = null;
+  _confirmSnapshot = null;
+  if(snap){
+    // Volver al modal que estaba abierto antes de pedir confirmación
+    var c = document.getElementById('modalContainer');
+    c.innerHTML = snap;
+    document.body.style.overflow = 'hidden';
+  } else {
+    closeModal();
+  }
+}
 /* Cierra el modal actual y ejecuta callback luego de la animación de salida */
 function closeModalThen(fn){  if(_modalClosing){ setTimeout(function(){ fn(); }, 240); return; }
   _modalClosing = true;
@@ -1947,7 +2542,13 @@ function closeModalThen(fn){  if(_modalClosing){ setTimeout(function(){ fn(); },
     fn();
   }
 }
-document.addEventListener('keydown',function(e){if(e.key==='Escape') closeModal()});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'){
+    if(document.getElementById('tutorialBackdrop')){ endTutorial(); return; }
+    if(document.querySelector('.modal-confirm')){ confirmCancel(); return; }
+    closeModal();
+  }
+});
 
 /* ════════════════════════════
    ROUTINES — VER TAB
@@ -1981,6 +2582,9 @@ function renderRoutines(){
 
 function routineCardHtml(r){
   var an=r.atletaId?athleteName(r.atletaId):null;
+  var diasUsados=[...new Set((r.ejercicios||[]).map(function(e){return e.dia}).filter(Boolean))];
+  var DIAS_ORDEN=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+  diasUsados.sort(function(a,b){return DIAS_ORDEN.indexOf(a)-DIAS_ORDEN.indexOf(b)});
   return '<div class="routine-card" onclick="showRoutineDetail('+r.id+')">'
     +'<div class="routine-card-accent"></div>'
     +'<div style="padding:16px 18px 14px">'
@@ -1991,6 +2595,7 @@ function routineCardHtml(r){
     +'<span class="badge badge-'+(r.activa?'green':'gray')+'">'+(r.activa?'Activa':'Inactiva')+'</span></div>'
     +'<p style="font-weight:700;font-size:1rem;color:var(--text);margin-bottom:8px">'+esc(r.nombre)+'</p>'
     +(an?'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:7px 10px;background:var(--bg3);border-radius:8px;border:1px solid var(--line)">'+avatarHtml(an,22)+'<span class="text-xs text-muted">'+esc(an)+'</span></div>':'')
+    +(diasUsados.length>0?'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px">'+diasUsados.map(function(d){return '<span class="badge badge-gray" style="font-size:0.6rem"><i class="fa-solid fa-calendar-day" style="margin-right:3px;font-size:0.55rem"></i>'+esc(d.slice(0,3))+'</span>'}).join('')+'</div>':'')
     +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">'
     +[['⏱',r.duracion+'min'],['💪',r.ejercicios.length+' ejerc.'],['📅',r.fecha]].map(function(x){
       return '<div style="background:var(--bg3);border:1px solid var(--line);border-radius:8px;padding:7px;text-align:center"><div style="font-size:0.85rem">'+x[0]+'</div><div class="text-xs text-muted mt-4">'+esc(x[1])+'</div></div>';
@@ -2002,7 +2607,20 @@ function routineCardHtml(r){
     +'</div></div></div>';
 }
 
-function deleteRoutine(id){ state.rutinas=state.rutinas.filter(function(r){return r.id!==id}); toast('Rutina eliminada','warn'); renderRoutines(); }
+function deleteRoutine(id){
+  var r=state.rutinas.find(function(x){return x.id===id});
+  var nombre=r?r.nombre:'esta rutina';
+  showConfirm({
+    title:'Eliminar rutina',
+    message:'¿Seguro que quieres eliminar "'+nombre+'"? Esta acción no se puede deshacer.',
+    confirmText:'Eliminar', danger:true,
+    onConfirm:function(){
+      state.rutinas=state.rutinas.filter(function(x){return x.id!==id});
+      saveState();
+      toast('Rutina eliminada','warn'); renderRoutines();
+    }
+  });
+}
 
 function showRoutineDetail(id){
   var r=state.rutinas.find(function(x){return x.id===id}); if(!r) return;
@@ -2024,16 +2642,18 @@ function showRoutineDetail(id){
     +(r.descripcion?'<p class="text-sm" style="color:var(--text2);margin-bottom:16px">'+esc(r.descripcion)+'</p>':'')
     +(r.ejercicios.length>0?'<p class="section-label"><i class="fa-solid fa-dumbbell" style="margin-right:8px"></i>Ejercicios ('+r.ejercicios.length+')</p>'
     +'<div style="overflow-x:auto"><table class="table"><thead><tr>'
-    +['#','Ejercicio','Series','Reps','Carga','Descanso','Notas'].map(function(h){return '<th>'+h+'</th>'}).join('')
+    +['#','Ejercicio','Series','Reps','Carga','Descanso','Día','Notas'].map(function(h){return '<th>'+h+'</th>'}).join('')
     +'</tr></thead><tbody>'
     +r.ejercicios.map(function(e,i){
       return '<tr><td style="color:var(--coral2);font-family:var(--font-display)">'+(i+1)+'</td>'
         +'<td style="font-weight:600">'+esc(e.nombre)+'</td><td>'+e.series+'</td>'
         +'<td>'+esc(e.reps)+'</td><td>'+(esc(e.peso)||'—')+'</td>'
-        +'<td>'+esc(e.descanso)+'</td><td class="text-muted">'+(esc(e.notas)||'—')+'</td></tr>';
+        +'<td>'+esc(e.descanso)+'</td>'
+        +'<td>'+(e.dia?'<span class="badge badge-gray" style="font-size:0.6rem">'+esc(e.dia.slice(0,3))+'</span>':'—')+'</td>'
+        +'<td class="text-muted">'+(esc(e.notas)||'—')+'</td></tr>';
     }).join('')+'</tbody></table></div>':'')
     +'<div class="modal-footer">'
-    +'<button class="btn btn-danger btn-md" onclick="deleteRoutine('+r.id+');closeModal()"><i class="fa-solid fa-trash"></i></button>'
+    +'<button class="btn btn-danger btn-md" onclick="deleteRoutine('+r.id+')"><i class="fa-solid fa-trash"></i></button>'
     +'<button class="btn btn-outline btn-md" onclick="closeModalThen(function(){openRoutineModal('+r.id+')})"><i class="fa-solid fa-pen"></i> Editar</button>'
     +'</div></div>');
 }
@@ -2068,6 +2688,7 @@ function renderExerciseList(){
   var c=document.getElementById('exList'); if(!c) return;
   if(_exercises.length===0){c.innerHTML='<p style="font-size:0.78rem;color:var(--text4);text-align:center;padding:16px;background:var(--bg3);border-radius:var(--radius-sm);border:1px dashed var(--line2)">Sin ejercicios. Haz clic en "+ Agregar".</p>';return}
   var musculos=Object.keys(MUSCLE_ICONS).sort();
+  var DIAS=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
   c.innerHTML=_exercises.map(function(e,i){
     return '<div style="background:var(--bg3);border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
@@ -2081,25 +2702,39 @@ function renderExerciseList(){
       +'<option value=""'+(!e.notas||!MUSCLE_ICONS[e.notas]?' selected':'')+'>Sin asignar</option>'
       +musculos.map(function(m){return '<option'+(e.notas===m?' selected':'')+'>'+esc(m)+'</option>'}).join('')
       +'</select></div></div>'
-      +'<div class="ex-row-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">'
+      +'<div class="ex-row-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">'
       +[['Series',e.series,'number',''],['Reps',e.reps,'text',''],['Carga',e.peso,'text','kg'],['Descanso',e.descanso,'text','']].map(function(x,fi){
         return '<div><p style="font-size:0.6rem;font-weight:700;color:var(--text4);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">'+x[0]+'</p>'
           +'<input class="form-control" value="'+esc(x[1]||'')+'" type="'+x[2]+'" placeholder="'+x[3]+'" oninput="updEx('+i+','+(fi+1)+',this.value)" style="font-size:0.8rem;padding:8px 10px"></div>';
-      }).join('')+'</div></div>';
+      }).join('')+'</div>'
+      +'<div><p style="font-size:0.6rem;font-weight:700;color:var(--text4);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Día</p>'
+      +'<select class="form-control" oninput="updEx('+i+',6,this.value)" style="font-size:0.8rem;padding:8px 10px">'
+      +'<option value=""'+(!e.dia?' selected':'')+'>Sin asignar</option>'
+      +DIAS.map(function(d){return '<option'+(e.dia===d?' selected':'')+'>'+d+'</option>'}).join('')
+      +'</select></div></div>';
   }).join('');
 }
 
-function addExercise(){_exercises.push({id:uid(),nombre:'',series:4,reps:'8-12',peso:'',descanso:'90s',notas:''});renderExerciseList()}
+function addExercise(){_exercises.push({id:uid(),nombre:'',series:4,reps:'8-12',peso:'',descanso:'90s',dia:'',notas:''});renderExerciseList()}
 function removeExercise(i){_exercises.splice(i,1);renderExerciseList()}
-function updEx(i,fi,v){var fields=['nombre','series','reps','peso','descanso','notas'];if(_exercises[i]) _exercises[i][fields[fi]]=fi===1?+v:v}
+function updEx(i,fi,v){var fields=['nombre','series','reps','peso','descanso','notas','dia'];if(_exercises[i]) _exercises[i][fields[fi]]=fi===1?+v:v}
 
 function saveRoutine(){
   if(!gv('rf-nombre')){document.getElementById('rf-err').textContent='Nombre requerido';return}
   var atletaIdVal=document.getElementById('rf-atletaId').value;
-  if(!atletaIdVal){
-    if(!confirm('No asignaste esta rutina a ningún atleta: no aparecerá en su perfil ni se podrá iniciar una sesión en vivo con ella. ¿Guardar igual?')) return;
-  }
   var data={nombre:gv('rf-nombre'),tipo:gv('rf-tipo'),dificultad:gv('rf-dificultad'),deporte:gv('rf-deporte'),duracion:+(document.getElementById('rf-duracion').value)||60,fecha:gv('rf-fecha'),descripcion:gv('rf-descripcion'),atletaId:atletaIdVal?+atletaIdVal:null,ejercicios:JSON.parse(JSON.stringify(_exercises)),activa:true};
+  if(!atletaIdVal){
+    showConfirm({
+      title:'Guardar sin atleta',
+      message:'No asignaste esta rutina a ningún atleta: no aparecerá en su perfil ni se podrá iniciar una sesión en vivo con ella. ¿Guardar igual?',
+      confirmText:'Guardar igual', danger:false,
+      onConfirm:function(){ _doSaveRoutine(data); }
+    });
+    return;
+  }
+  _doSaveRoutine(data);
+}
+function _doSaveRoutine(data){
   if(editId.routine){state.rutinas=state.rutinas.map(function(r){return r.id===editId.routine?Object.assign({},r,data):r});toast('Rutina actualizada ✓')}
   else{state.rutinas.push(Object.assign({},data,{id:uid()}));toast('Rutina creada ✓')}
   saveState();
@@ -2113,9 +2748,14 @@ function init(){
   loadState();
   buildSidebar();
   buildMobileNav();
+  requestAnimationFrame(function(){ moveMobileNavBlob(true); });
   renderDashboard();
   setInterval(saveState, 4000);
   window.addEventListener('beforeunload', saveState);
+  window.addEventListener('resize', function(){
+    moveSidebarBlob(true);
+    moveMobileNavBlob(true);
+  });
 }
 
 init();
