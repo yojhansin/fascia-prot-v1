@@ -6,7 +6,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>FASCIA — Training OS</title>
+<title>FASCIA-ULTIMA-ACTUALIZACION</title>
 <link rel="stylesheet" href="assets/css/style.css">
 <link rel="icon" type="image/png" href="assets/logo/fascia-favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -110,6 +110,13 @@
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="tutorial-help-btn" onclick="startTutorial()" title="Ver tutorial"><i class="fa-solid fa-question"></i></button>
+          <div class="days-picker-wrap" id="daysPickerWrap">
+            <button class="days-picker-btn" id="daysPickerBtn" onclick="toggleDaysPicker()">
+              <i class="fa-solid fa-calendar-week"></i>
+              <span id="daysPickerLabel">Días</span>
+            </button>
+            <div class="days-picker-pop" id="daysPickerPop"></div>
+          </div>
           <div class="search-wrap" style="min-width:160px">
             <i class="fa-solid fa-magnifying-glass si"></i>
             <input type="text" class="form-control" id="routineSearch" placeholder="Buscar…" oninput="renderRoutines()" style="font-size:0.8rem">
@@ -119,7 +126,32 @@
       </div>
 
       <!-- ░░ TAB: CREAR RUTINA ░░ -->
-      <div id="tabPanelCrear" style="flex:1;display:flex;min-height:0;overflow:hidden;position:relative">
+      <div id="tabPanelCrear" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden;position:relative">
+
+        <!-- ░ CONFIG INICIAL ░ -->
+        <div class="builder-config-bar" id="builderConfigBar">
+          <div class="builder-config-field">
+            <label class="builder-config-label"><i class="fa-solid fa-tag"></i> Nombre de la rutina</label>
+            <input type="text" id="builderRutinaName" class="builder-config-input" placeholder="Ej: Torso-Pierna Avanzado">
+          </div>
+          <div class="builder-config-field builder-config-field--sm">
+            <label class="builder-config-label"><i class="fa-solid fa-bullseye"></i> Enfoque principal</label>
+            <select id="builderRutinaFocus" class="builder-config-select">
+              <option value="">— Seleccionar —</option>
+              <option>Hipertrofia</option>
+              <option>Fuerza</option>
+              <option>Pérdida de Grasa</option>
+              <option>Resistencia</option>
+              <option>Readaptación</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- ░ TABS DE DÍAS ░ -->
+        <div class="builder-days-tabs" id="builderDaysTabs"></div>
+
+        <!-- ░ CONTENEDOR PRINCIPAL (modelo + floating bars) ░ -->
+        <div style="flex:1;display:flex;min-height:0;overflow:hidden;position:relative">
 
         <!-- body-muscles map (full area) -->
         <div class="rutinas-left-panel">
@@ -131,7 +163,7 @@
             <div id="bmChartContainer" style="flex:1;display:flex;align-items:center;justify-content:center;min-height:300px;height:100%;padding:8px 0"></div>
             <div class="bm-hint" id="bmHint">
               <i class="fa-solid fa-hand-pointer" style="color:var(--coral);margin-right:5px"></i>
-              Toca cualquier músculo para agregar a la rutina
+              Activa un día y toca un músculo para agregar ejercicios
             </div>
           </div>
         </div>
@@ -142,7 +174,7 @@
             <span class="builder-empty-icon">💪</span>
             <p class="builder-empty-title" style="margin:0">Crea tu rutina</p>
           </div>
-          <p class="builder-empty-sub" style="margin:0">Toca cualquier músculo del modelo para agregarlo y definir sus ejercicios.</p>
+          <p class="builder-empty-sub" style="margin:0">Activa un día arriba (Lunes, Martes…) y luego toca un músculo del modelo para agregar ejercicios.</p>
         </div>
 
         <!-- Summary bar, floating over the body map -->
@@ -161,10 +193,11 @@
             <p id="builderStatus" class="builder-header-status"></p>
             <div style="display:flex;gap:7px">
               <button class="btn-ghost-xs" onclick="clearBuilderAll()"><i class="fa-solid fa-rotate-left" style="margin-right:4px"></i>Limpiar</button>
-              <button id="btnFinalizar" class="btn-finalizar disabled" onclick="finalizarRutina()"><i class="fa-solid fa-floppy-disk" style="margin-right:5px"></i>Guardar Rutina</button>
+              <button id="btnFinalizar" class="btn-finalizar disabled" onclick="finalizarRutina()"><i class="fa-solid fa-floppy-disk" style="margin-right:5px"></i>Guardar Plantilla</button>
             </div>
           </div>
         </div>
+        </div><!-- /contenedor principal -->
       </div>
 
       <!-- ░░ TAB: VER RUTINAS ░░ -->
